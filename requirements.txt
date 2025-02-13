@@ -7,7 +7,7 @@ matplotlib
 autopep8
 torchvision
 torchviz
-sklearn
+scikit-learn
 py-pde
 scikit-image
 h5py

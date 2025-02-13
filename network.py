@@ -71,7 +71,7 @@ class CodeBilinear(nn.Module):
         init.uniform_(self.bias, -bound, bound)
 
     def forward(self, input1: Tensor, input2: Tensor) -> Tensor:
-        # input1: b, t, h, w, s, i
+        # input1: b, t, c, s, i
         # input2: b, t, s, j
         # W: o, i, j
         # B: o, i
@@ -80,9 +80,9 @@ class CodeBilinear(nn.Module):
         res = 0
         
         bias_code = torch.einsum('btsj,oj->btso', input2, self.A)
-        bias_code = bias_code.unsqueeze(2).unsqueeze(2)
+        bias_code = bias_code.unsqueeze(2)
 
-        linear_trans_2 = torch.einsum('bthwsi,oi->bthwso', input1, self.B)
+        linear_trans_2 = torch.einsum('btcsi,oi->btcso', input1, self.B)
        
         res += linear_trans_2 
         res += bias_code
@@ -104,7 +104,7 @@ class MLP(nn.Module):
             nls[nl](), 
             nn.Linear(hidden_size, hidden_size), 
             nls[nl](), 
-            nn.Linear(hidden_size, code_size if out_size == None else out_size),
+            nn.Linear(hidden_size, code_size if out_size is None else out_size),
         )
 
     def forward(self, x):
@@ -120,7 +120,7 @@ class SetEncoder(nn.Module):
             nls[nl](),
             nn.Linear(hidden_size, hidden_size),
             nls[nl](),
-            nn.Linear(hidden_size, code_size if out_size == None else out_size),
+            nn.Linear(hidden_size, code_size if out_size is None else out_size),
         )
         self.ave = nn.Conv1d(code_size, code_size, n_cond)
 

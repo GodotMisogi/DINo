@@ -37,7 +37,7 @@ logging.getLogger("matplotlib.font_manager").disabled = True
 logging.getLogger("PIL").setLevel(logging.WARNING)
 matplotlib.pyplot.set_loglevel("critical")
 
-input_dataset = "navier"
+input_dataset = "splash/20250211_223051"
 gpu = 0
 gpu_id = 0
 home_folder = "./results"
@@ -48,20 +48,20 @@ path_model = ""
 n_steps = 300
 method = "rk4"
 subsampling_rate = 1.0
-opts, args = getopt.getopt(sys.argv[1:], "d:f:g:p:r:s:")
-for opt, arg in opts:
-    if opt == "-d":
-        input_dataset = arg
-    if opt == "-f":
-        home_folder = arg
-    if opt == "-g":
-        gpu = int(arg)
-    if opt == "-p":
-        path_model = arg
-    if opt == "-r":
-        subsampling_rate = float(arg)
-    if opt == "-s":
-        seed = int(arg)
+# opts, args = getopt.getopt(sys.argv[1:], "d:f:g:p:r:s:")
+# for opt, arg in opts:
+#     if opt == "-d":
+#         input_dataset = arg
+#     if opt == "-f":
+#         home_folder = arg
+#     if opt == "-g":
+#         gpu = int(arg)
+#     if opt == "-p":
+#         path_model = arg
+#     if opt == "-r":
+#         subsampling_rate = float(arg)
+#     if opt == "-s":
+#         seed = int(arg)
 
 if input_dataset == "wave" or input_dataset == "shallow_water":
     n_steps = 500
@@ -87,8 +87,8 @@ set_rdm_seed(seed)
 first = 4
 n_frames_train = 10
 (
-    _,
-    mask_ts,
+    # _,
+    # mask_ts,
     size,
     _,
     coord_dim,
@@ -109,22 +109,23 @@ n_frames_train = 10
     device=device,
     n_frames_train=n_frames_train,
 )
+coords = dataloader_ts.dataset.coords
 
 # Load checkpoint
 checkpoint = torch.load(
     os.path.join(home_folder, input_dataset, path_model, "model_ts.pt"),
     map_location=f"cuda:{gpu_id}",
 )
-logger.info(f"N_ones: {torch.sum(mask_ts)}")
-logger.info(f"Missingness: {100.0 * (1 - torch.sum(mask_ts) / (size[0] * size[1]))}%")
-plt.imshow(mask_ts.cpu().numpy(), interpolation="none")
-plt.savefig(
-    os.path.join(path_checkpoint, f"mask.png"),
-    dpi=72,
-    bbox_inches="tight",
-    pad_inches=0,
-)
-plt.close()
+# logger.info(f"N_ones: {torch.sum(mask_ts)}")
+# logger.info(f"Missingness: {100.0 * (1 - torch.sum(mask_ts) / (size[0] * size[1]))}%")
+# plt.imshow(mask_ts.cpu().numpy(), interpolation="none")
+# plt.savefig(
+#     os.path.join(path_checkpoint, f"mask.png"),
+#     dpi=72,
+#     bbox_inches="tight",
+#     pad_inches=0,
+# )
+# plt.close()
 
 is_markovian = "net_cond_params" not in checkpoint
 
@@ -189,8 +190,8 @@ if is_markovian:
         device,
         method,
         criterion,
-        mask_data,
-        mask_ts,
+        # mask_data,
+        # mask_ts,
         state_dim,
         code_dim,
         coord_dim,
@@ -204,10 +205,11 @@ if is_markovian:
         if j in [0]:
             for state_idx in range(state_dim):
                 write_image(
+                    coords,
                     ground_truth[:first],
                     model_output[:first],
                     state_idx,
-                    os.path.join(path_checkpoint, f"img_ts_state{state_idx}.pdf"),
+                    os.path.join(path_checkpoint),
                 )
     logger.info(
         "Dataset %s, Runid %s, Loss_ts: %.3e In-t: %.3e In-s: %.3e Out-s: %.3e Out-t: %.3e In-s: %.3e Out-s: %.3e"
@@ -233,8 +235,8 @@ else:
         device,
         method,
         criterion,
-        mask_data,
-        mask_ts,
+        # mask_data,
+        # mask_ts,
         state_dim,
         code_dim,
         coord_dim,
@@ -249,6 +251,7 @@ else:
         if j in [0]:
             for state_idx in range(state_dim):
                 write_image(
+                    coords,
                     ground_truth[:first],
                     model_output[:first],
                     state_idx,
