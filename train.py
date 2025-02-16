@@ -33,7 +33,7 @@ logging.getLogger('PIL').setLevel(logging.WARNING)
 matplotlib.pyplot.set_loglevel("critical")
 
 log_every = 8
-input_dataset = "navier"
+input_dataset = "shallow"
 gpu = 0
 gpu_id = 0
 home_folder = "./results"
@@ -42,7 +42,7 @@ lr_adapt = 1e-2
 seed = 1
 options = {}
 opts, args = getopt.getopt(sys.argv[1:], "c:d:f:g:r:w:")
-subsampling_rate = 1.0
+subsampling_rate = 0.75
 checkpoint_path = None  # warm start from a model in this path
 n_cond = 0
 # for opt, arg in opts:
@@ -78,7 +78,7 @@ set_rdm_seed(seed)
 
 # Config
 first = 4
-n_frames_train = 10
+n_frames_train = 30
 mask, mask_ts, size, state_dim, coord_dim, code_dim, hidden_c, hidden_c_enc, n_layers, dataset_tr_params, \
 dataset_tr_eval_params, dataset_ts_params, dataloader_tr, dataloader_tr_eval, dataloader_ts = \
     process_config(input_dataset, path_results, mask_data=mask_data, device=device, n_frames_train=n_frames_train)
@@ -246,7 +246,7 @@ for epoch in range(n_epochs):
                     for j, (ground_truth, model_output) in enumerate(zip(gts, mos)):
                         if j in [0]:
                             for state_idx in range(state_dim):
-                                write_image(ground_truth[:first], model_output[:first], state_idx, os.path.join(path_checkpoint, f"img_tr_state{state_idx}.pdf"))
+                                write_image(ground_truth, model_output, state_idx, os.path.join(path_checkpoint, f"img_tr_state{state_idx}.png"))
                     loss_tr_min = optimize_tr
                     torch.save({
                         "epoch": epoch,
@@ -270,7 +270,7 @@ for epoch in range(n_epochs):
                     for j, (ground_truth, model_output) in enumerate(zip(gts, mos)):
                         if j in [0]:
                             for state_idx in range(state_dim):
-                                write_image(ground_truth[:first], model_output[:first], state_idx, os.path.join(path_checkpoint, f"img_ts_state{state_idx}.pdf"))
+                                write_image(ground_truth, model_output, state_idx, os.path.join(path_checkpoint, f"img_ts_state{state_idx}.png"))
                     loss_ts_min = optimize_ts
                     torch.save({
                         "epoch": epoch,
@@ -374,8 +374,8 @@ for epoch in range(n_epochs):
     #                 for j, (ground_truth, model_output, codes, states, t) in enumerate(zip(gts, mos, cs, ss, times)):
     #                     if j in [0]:
     #                         for state_idx in range(state_dim):
-    #                             write_image(ground_truth[:first], model_output[:first], state_idx,
-    #                                         os.path.join(path_checkpoint, f"img_tr_state{state_idx}.pdf"))
+    #                             write_image(ground_truth, model_output, state_idx,
+    #                                         os.path.join(path_checkpoint, f"img_tr_state{state_idx}.png"))
     #                 loss_tr_min = optimize_tr
     #                 torch.save({
     #                     "epoch": epoch,
@@ -404,7 +404,7 @@ for epoch in range(n_epochs):
     #                 for j, (ground_truth, model_output, codes, states, t) in enumerate(zip(gts, mos, cs, ss, times)):
     #                     if j in [0]:
     #                         for state_idx in range(state_dim):
-    #                             write_image(ground_truth[:first], model_output[:first], state_idx, os.path.join(path_checkpoint, f"img_ts_state{state_idx}.pdf"), cmap="seismic")
+    #                             write_image(ground_truth, model_output, state_idx, os.path.join(path_checkpoint, f"img_ts_state{state_idx}.png"), cmap="seismic")
     #                 loss_ts_min = optimize_ts
     #                 torch.save({
     #                     "epoch": epoch,

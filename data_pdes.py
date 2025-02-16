@@ -89,7 +89,7 @@ class AbstractDataset(Dataset):
             else:
                 self.buffer[f'{traj_id}'] = self._load_trajectory(traj_id)
         data = self.buffer[f'{traj_id}']['data'][:, seq_id * self.n:(seq_id + 1) * self.n]  # (n_ch, T, H, W)
-        data = torch.tensor(data).float().permute(1, 2, 3, 0)  # (T, H, W, n_ch)
+        data = data.clone().detach().float().permute(1, 2, 3, 0)  # (T, H, W, n_ch)
         if self.group == 'train':
             data = data[:self.n_frames_train] / self.scale 
             t = t[:self.n_frames_train]
@@ -477,25 +477,30 @@ class ShallowDataset(AbstractDataset):
         )
         self.files_obj_buf = dict()
         self._load_trajectory(0, file_object_only=True)
-        if self.group == "test":
-            self.coords = torch.tensor(self.files_obj_buf[0]['coords'])
-        else:
-            self.coords = torch.tensor(self.files_obj_buf[0]['coords'][::2])
+        xs = self.files_obj_buf[0]['coords']['x'][2:-2].astype(np.float32)
+        ys = self.files_obj_buf[0]['coords']['y'][2:-2].astype(np.float32)
+        # if self.group == "test":
+        tensors = torch.tensor(xs / (np.max(xs) - np.min(xs))), torch.tensor(ys / (np.max(ys) - np.min(ys)))
+        self.coords = torch.stack(torch.meshgrid(*tensors, indexing='ij'), dim=-1)
+        # else:
+        #     tensors = torch.tensor(xs[::2] / (np.max(xs) - np.min(xs))), torch.tensor(ys[::2] / (np.max(ys) - np.min(ys)))
+        #     self.coords = torch.stack(torch.meshgrid(*tensors, indexing='ij'), dim=-1)
 
         self.coord_dim = self.coords.shape[-1]
 
     def _load_trajectory(self, traj_id, file_object_only=False):
         if self.files_obj_buf.get(traj_id) is None:
             self.files_obj_buf[traj_id] = h5py.File(
-                os.path.join(self.dataset_path, f"traj_{traj_id:04d}.hdf5"), mode="r",
+                os.path.join(self.dataset_path, f"traj_{traj_id:04d}.h5"), mode="r",
             )
 
         if file_object_only:
             return
 
         f = self.files_obj_buf[traj_id]
+        data = torch.from_numpy(f["traj"]["huv"][:,:,2:-2,2:-2])
 
-        if self.group == "test":
-            return {"data": torch.from_numpy(f["train_data"][:,:, :-51])}
-
-        return {"data": torch.from_numpy(f["train_data"][:,:, :-51:2])}
+        # if self.group == "test":
+        return {"data": data}
+        # else:
+            # return {"data": data[:, ::2, ::2]}

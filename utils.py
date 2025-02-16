@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from torch.nn import init
 from torch import nn
 import shelve
-from data_pdes import WaveDataset, NavierStokesDataset, ShallowWaterDataset, SST
+from data_pdes import WaveDataset, NavierStokesDataset, ShallowWaterDataset, ShallowDataset, SST
 import math
 import torch
 from logging.handlers import RotatingFileHandler
@@ -148,6 +148,45 @@ def process_config(input_dataset, path_results, device="gpu:0", mask_data=0.0, n
         dataset_tr_params['n_seq'] = len(dataset_tr)
         dataset_ts_params['n_seq'] = len(dataset_ts)
         dataset_tr_eval_params = dataset_tr_params
+    elif "shallow" in input_dataset:
+        state_dim = 3
+        coord_dim = 2
+        # code_dim = 100
+        # hidden_c = 2**8
+        # hidden_c_enc = 2**8
+        # n_layers = 3
+        code_dim = 600
+        hidden_c = 1200
+        hidden_c_enc = 256
+        n_layers = 6
+        minibatch_size = 4
+        size = (48, 48)
+        n_seq = 8
+        dataset_tr_params = {
+            "dataset_name": "shallow",
+            "root": "results/shallow/",  # Path to your generated data.
+            "device": "cuda",
+            "buffer_shelve": None,
+            "n_seq": n_seq,
+            "n_seq_per_traj": 8,
+            "t_horizon": 40,
+            "dt": 1,
+            "group": "train",
+            "n_frames_train": n_frames_train,
+            "size": size,
+        }
+        dataset_tr_eval_params = dict()
+        dataset_tr_eval_params.update(dataset_tr_params)
+        dataset_tr_eval_params["group"] = "train_eval"
+
+        dataset_ts_params = dict()
+        dataset_ts_params.update(dataset_tr_params)
+        dataset_ts_params["group"] = "test"
+        dataset_ts_params["n_seq"] = 8
+
+        dataset_tr = ShallowDataset(**dataset_tr_params)
+        dataset_tr_eval = ShallowDataset(**dataset_tr_eval_params)
+        dataset_ts = ShallowDataset(**dataset_ts_params)
     else:
         raise Exception(f"{input_dataset} does not exist")
     if isinstance(size, int):
@@ -443,7 +482,7 @@ def DataLoaderODE(dataset, minibatch_size, is_train=True):
     return DataLoader(**dataloader_params)
 
 
-def write_image(batch_gt, batch_pred, state_idx, path, cmap='plasma', divider=1):
+def write_image(batch_gt, batch_pred, state_idx, path, cmap="RdBu_r", divider=1):
     """
     Print reference trajectory (1st line) and predicted trajectory (2nd line).
     Skip every N frames (N=divider)
