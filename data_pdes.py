@@ -467,3 +467,35 @@ class SST(Dataset):
             'mu_norm': self.cst[file_id][0][idx_id + 1: idx_id + self.nt_pred + 1],
             'std_norm': self.cst[file_id][1][idx_id + 1: idx_id + self.nt_pred + 1],
         }
+
+
+class ShallowDataset(AbstractDataset):
+    def __init__(self, root, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.dataset_path = os.path.join(
+            root, f"{'test' if self.group == 'test' else 'train'}"
+        )
+        self.files_obj_buf = dict()
+        self._load_trajectory(0, file_object_only=True)
+        if self.group == "test":
+            self.coords = torch.tensor(self.files_obj_buf[0]['coords'])
+        else:
+            self.coords = torch.tensor(self.files_obj_buf[0]['coords'][::2])
+
+        self.coord_dim = self.coords.shape[-1]
+
+    def _load_trajectory(self, traj_id, file_object_only=False):
+        if self.files_obj_buf.get(traj_id) is None:
+            self.files_obj_buf[traj_id] = h5py.File(
+                os.path.join(self.dataset_path, f"traj_{traj_id:04d}.hdf5"), mode="r",
+            )
+
+        if file_object_only:
+            return
+
+        f = self.files_obj_buf[traj_id]
+
+        if self.group == "test":
+            return {"data": torch.from_numpy(f["train_data"][:,:, :-51])}
+
+        return {"data": torch.from_numpy(f["train_data"][:,:, :-51:2])}

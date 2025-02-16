@@ -462,8 +462,7 @@ def write_image(batch_gt, batch_pred, state_idx, path, cmap='plasma', divider=1)
         for t in range(t_horizon):
             # Iterating over the grid returns the Axes.
             grid[2 * traj * t_horizon + t].imshow(batch_gt[divider * t, traj, :, :, state_idx].cpu().numpy(), vmax=vmax, vmin=vmin, cmap=cmap, interpolation='none')
-            if t - 4 >= 0:
-                grid[(2 * traj + 1) * t_horizon + t].imshow(batch_pred[divider * t - 4, traj, :, :, state_idx].cpu().numpy(), vmax=vmax, vmin=vmin, cmap=cmap, interpolation='none')
+            grid[(2 * traj + 1) * t_horizon + t].imshow(batch_pred[divider * t, traj, :, :, state_idx].cpu().numpy(), vmax=vmax, vmin=vmin, cmap=cmap, interpolation='none')
             grid[2 * traj * t_horizon + t].set_axis_off()
             grid[(2 * traj + 1) * t_horizon + t].set_axis_off()
 
