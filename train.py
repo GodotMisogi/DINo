@@ -32,7 +32,7 @@ from utils import (
     scheduling,
     write_image,
     eval_dino,
-    eval_dino_cond,
+    # eval_dino_cond,
 )
 from matplotlib import rcParams
 
@@ -43,8 +43,8 @@ matplotlib.pyplot.set_loglevel("critical")
 
 log_every = 8
 input_dataset = "splash"
-gpu = 0
-gpu_id = 0
+gpu = 1
+gpu_id = 1
 home_folder = "./results"
 lr = 1e-2
 lr_adapt = 1e-2
@@ -78,18 +78,25 @@ if cuda:
 else:
     device = torch.device("cpu")
 
+# File handling
 path_results = os.path.join(home_folder, input_dataset)
 path_checkpoint = os.path.join(path_results, ts)
 path_plots = os.path.join(path_checkpoint, "plots")
+tr_plots = os.path.join(path_plots, "tr")
+ts_plots = os.path.join(path_plots, "ts")
 logger = create_logger(path_checkpoint, os.path.join(path_checkpoint, "log"))
 os.makedirs(path_checkpoint, exist_ok=True)
 os.makedirs(path_plots, exist_ok=True)
+os.makedirs(tr_plots, exist_ok=True)
+os.makedirs(ts_plots, exist_ok=True)
+
+# Set random seed
 init_type = "default"
 set_rdm_seed(seed)
 
 # Config
-first = 4 # WTF is this?
-n_frames_train = 10
+first = 4  # Apparently this is for the SST dataset
+n_frames_train = 40
 (
     # mask,
     # mask_ts,
@@ -116,10 +123,10 @@ n_frames_train = 10
 epsilon = epsilon_t = 0.99
 eval_every = 100
 n_epochs = 120000
-method = "rk4" if n_cond == 0 else "euler"
+method = "rk4" #if n_cond == 0 else "euler"
 
-if input_dataset == "wave" or input_dataset == "shallow_water":
-    n_steps = 500
+if input_dataset == "wave" or input_dataset == "shallow_water" or input_dataset == "splash":
+    n_steps = 1000
 else:
     n_steps = 300
 
@@ -132,21 +139,23 @@ if checkpoint_path is None:  # Start from scratch
         "n_layers": n_layers,
         "coord_dim": coord_dim,
     }
-    # Forecaster
+    net_dec = Decoder(**net_dec_params)
+    print(dict(net_dec.named_parameters()).keys())
+
+    # Dynamics
     net_dyn_params = {
         "state_c": state_dim,
         "hidden_c": hidden_c,
         "code_c": code_dim if n_cond == 0 else code_dim * 2,
     }
-    net_dec = Decoder(**net_dec_params)
     net_dyn = Derivative(**net_dyn_params)
-    if n_cond > 0:
-        net_cond_params = {
-            "code_size": code_dim * state_dim,
-            "n_cond": n_cond,
-            "hidden_size": 1024,
-        }
-        net_cond = SetEncoder(**net_cond_params)
+    print(dict(net_dyn.named_parameters()).keys())
+
+    # Initialize parameters
+    net_dec = net_dec.to(device)
+    net_dyn = net_dyn.to(device)
+
+    # Create a list of parameters for each sequence
     states_params = nn.ParameterList(
         [
             nn.Parameter(torch.zeros(n_frames_train, code_dim * state_dim).to(device))
@@ -154,19 +163,24 @@ if checkpoint_path is None:  # Start from scratch
         ]
     )
 
-    print(dict(net_dec.named_parameters()).keys())
-    print(dict(net_dyn.named_parameters()).keys())
+    # Non-Markovian dynamics
+    # if n_cond > 0:
+    #     net_cond_params = {
+    #         "code_size": code_dim * state_dim,
+    #         "n_cond": n_cond,
+    #         "hidden_size": 1024,
+    #     }
+    #     net_cond = SetEncoder(**net_cond_params)
+    #     net_cond = net_cond.to(device)
 
-    net_dec = net_dec.to(device)
-    net_dyn = net_dyn.to(device)
-    if n_cond > 0:
-        net_cond = net_cond.to(device)
 else:  # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=f"cuda:{gpu_id}")
     # logger.info(f"N_ones: {torch.sum(mask_ts)}")
     # logger.info(
     #     f"Missingness: {100.0 * (1 - torch.sum(mask_ts) / (size[0] * size[1]))}%"
     # )
+
+    # Decoder
     net_dec_params = checkpoint["net_dec_params"]
     state_dim = net_dec_params["state_c"]
     code_dim = net_dec_params["code_c"]
@@ -179,6 +193,7 @@ else:  # Load checkpoint
     net_dec.load_state_dict(net_dec_dict)
     print(dict(net_dec.named_parameters()).keys())
 
+    # Dynamics
     net_dyn_params = checkpoint["net_dyn_params"]
     net_dyn = Derivative(**net_dyn_params)
     net_dyn_dict = net_dyn.state_dict()
@@ -189,31 +204,32 @@ else:  # Load checkpoint
     net_dyn.load_state_dict(net_dyn_dict)
     print(dict(net_dyn.named_parameters()).keys())
 
-    if n_cond > 0:
-        net_cond = SetEncoder(code_dim, n_cond, 1024)
-        net_cond_dict = net_cond.state_dict()
-        pretrained_dict = {
-            k: v for k, v in checkpoint["cond_state_dict"].items() if k in net_dyn_dict
-        }
-        net_cond_dict.update(pretrained_dict)
-        net_cond.load_state_dict(net_cond_dict)
-        print(dict(net_cond.named_parameters()).keys())
-
     states_params = checkpoint["states_params"]
     net_dec = net_dec.to(device)
     net_dyn = net_dyn.to(device)
-    if n_cond > 0:
-        net_cond = net_cond.to(device)
+
+    # Non-Markovian dynamics
+    # if n_cond > 0:
+    #     net_cond = SetEncoder(code_dim, n_cond, 1024)
+    #     net_cond_dict = net_cond.state_dict()
+    #     pretrained_dict = {
+    #         k: v for k, v in checkpoint["cond_state_dict"].items() if k in net_dyn_dict
+    #     }
+    #     net_cond_dict.update(pretrained_dict)
+    #     net_cond.load_state_dict(net_cond_dict)
+    #     print(dict(net_cond.named_parameters()).keys())
+
+    #     net_cond = net_cond.to(device)
 
 criterion = nn.MSELoss()
 
 optim_net_dec = torch.optim.Adam([{"params": net_dec.parameters(), "lr": lr}])
 optim_net_dyn = torch.optim.Adam([{"params": net_dyn.parameters(), "lr": lr / 10}])
 optim_states = torch.optim.Adam([{"params": states_params, "lr": lr / 10}])
-if n_cond:
-    optim_net_cond = torch.optim.Adam(
-        [{"params": net_cond.parameters(), "lr": lr / 10}]
-    )
+# if n_cond:
+#     optim_net_cond = torch.optim.Adam(
+#         [{"params": net_cond.parameters(), "lr": lr / 10}]
+#     )
 
 # Logs
 logger.info(f"run_id: {ts}")
@@ -224,19 +240,20 @@ logger.info(f"dataset: {input_dataset}")
 logger.info(f"method: {method}")
 logger.info(f"code_c: {code_dim}")
 logger.info(f"lr: {lr}")
-logger.info(
-    f"n_params forecaster: {count_parameters(net_dec) + count_parameters(net_dyn)}"
-)
+logger.info(f"autodec n_steps: {n_steps}")
+logger.info(f"n_params decoder: {count_parameters(net_dec)}")
+logger.info(f"n_params dynamics: {count_parameters(net_dyn)}")
 logger.info(f"coord_dim: {coord_dim}")
 logger.info(f"n_frames_train: {n_frames_train}")
 logger.info(f"subsampling_rate: {subsampling_rate * 100}%")
-if n_cond > 0:
-    logger.info(f"n_cond: {n_cond}")
+# if n_cond > 0:
+#     logger.info(f"n_cond: {n_cond}")
 
 # Train
 loss_tr_min, loss_ts_min, loss_relative_min = float("inf"), float("inf"), float("inf")
+# Iterate over epochs
 for epoch in range(n_epochs):
-    if n_cond == 0:
+    if n_cond == 0:  # Markovian dynamics
         # Update decoder and dynamics model parameters
         if epoch != 0:
             optim_net_dec.step()
@@ -285,16 +302,17 @@ for epoch in range(n_epochs):
             states = states_params_index.permute(1, 0, 2).view(
                 b_size, t_size, state_dim, code_dim
             )
-            model_input_exp = model_input.view(
-                b_size, 1, xy_size, 1, coord_dim
-            ).expand(b_size, t_size, xy_size, state_dim, coord_dim)
+            model_input_exp = model_input.view(b_size, 1, xy_size, 1, coord_dim).expand(
+                b_size, t_size, xy_size, state_dim, coord_dim
+            )
 
             # Decoder prediction
             model_output, _ = net_dec(model_input_exp, states)
             # Decoder loss
             loss_l2 = criterion(
                 # model_output[:, :, mask, :], ground_truth[:, :, mask, :]
-                model_output, ground_truth
+                model_output,
+                ground_truth,
             )
             optim_states.zero_grad(True)
             # Compute gradient
@@ -357,22 +375,20 @@ for epoch in range(n_epochs):
                 if loss_tr_min > optimize_tr:
                     # Report loss
                     logger.info(
-                        f"Checkpoint created: min tr loss was {loss_tr_min}, new is {optimize_tr}"
+                        f"Checkpoint created: min tr loss was {loss_tr_min}, new is {optimize_tr}\n"
                     )
-                    
+
                     # Save image
-                    for j, (ground_truth, modl_output) in enumerate(zip(gts, mos)):
-                        if j in [0]:
-                            for state_idx in range(state_dim):
-                                write_image(
-                                    batch["coords"][0].to(device).clone().detach().cpu().numpy(),
-                                    ground_truth.clone.detach().cpu().numpy(),
-                                    model_output.clone.detach().cpu().numpy(),
-                                    state_idx,
-                                    os.path.join(
-                                        path_checkpoint, "plots"
-                                    ),
-                                )
+                    # for j, (ground_truth, model_output) in enumerate(zip(gts, mos)):
+                    #     if j in [0]:
+                    #         for state_idx in range(state_dim):
+                    #             write_image(
+                    #                 dataloader_tr.dataset.coords,
+                    #                 ground_truth.clone().detach().cpu().numpy(),
+                    #                 model_output.clone().detach().cpu().numpy(),
+                    #                 state_idx,
+                    #                 os.path.join(tr_plots),
+                    #             )
                     # Set new minimum loss
                     loss_tr_min = optimize_tr
 
@@ -426,20 +442,22 @@ for epoch in range(n_epochs):
                 optimize_ts = loss_ts
                 if loss_ts_min > optimize_ts:
                     logger.info(
-                        f"Checkpoint created: min ts loss was {loss_ts_min}, new is {optimize_ts}"
+                        f"Checkpoint created: min ts loss was {loss_ts_min}, new is {optimize_ts}\n"
                     )
                     # for j, (ground_truth, model_output) in enumerate(zip(gts, mos)):
                     #     if j in [0]:
                     #         for state_idx in range(state_dim):
                     #             write_image(
-                    #                 ground_truth[:first],
-                    #                 model_output[:first],
+                    #                 dataloader_ts.dataset.coords,
+                    #                 ground_truth.clone().detach().cpu().numpy(),
+                    #                 model_output.clone().detach().cpu().numpy(),
                     #                 state_idx,
-                    #                 os.path.join(
-                    #                     path_checkpoint, f"img_ts_state{state_idx}.pdf"
-                    #                 ),
+                    #                 os.path.join(ts_plots),
                     #             )
+                    # Set new minimum testing loss
                     loss_ts_min = optimize_ts
+
+                    # Save testing model as checkpoint
                     torch.save(
                         {
                             "epoch": epoch,
@@ -456,10 +474,12 @@ for epoch in range(n_epochs):
                         },
                         os.path.join(path_checkpoint, f"model_ts.pt"),
                     )
+
+                # Report
                 logger.info(
-                    "Dataset %s, Runid %s, Epoch %d, Iter %d, Loss_tr: %.3e In-t: %.3e In-s: %.3e Out-s: %.3e "
-                    "Out-t: %.3e In-s: %.3e Out-s: %.3e, Loss_ts: %.3e In-t: %.3e In-s: %.3e Out-s: %.3e Out-t: %.3e "
-                    "In-s: %.3e Out-s: %.3e"
+                    "Dataset %s, Runid %s, Epoch %d, Iter %d,\nLoss_tr: %.6e In-t: %.6e In-s: %.6e Out-s: %.6e "
+                    "Out-t: %.6e In-s: %.6e Out-s: %.6e,\nLoss_ts: %.6e In-t: %.6e In-s: %.6e Out-s: %.6e Out-t: %.6e "
+                    "In-s: %.6e Out-s: %.6e"
                     % (
                         input_dataset,
                         ts,
@@ -481,7 +501,7 @@ for epoch in range(n_epochs):
                         loss_ts_out_t_out_s,
                     )
                 )
-                logger.info("========")
+                logger.info("========\n")
 
     # else:
     #     for i, batch in enumerate(dataloader_tr):
@@ -510,7 +530,7 @@ for epoch in range(n_epochs):
     #         model_output, _ = net_dec(model_input_exp, states)
     #         loss_l2 = criterion(
     #             # model_output[:, :, mask, :], ground_truth[:, :, mask, :]
-                
+
     #         )
     #         loss_opt = loss_l2
 

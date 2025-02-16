@@ -30,7 +30,7 @@ import logging
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from mpl_toolkits.axes_grid1 import ImageGrid
+from mpl_toolkits.axes_grid1 import ImageGrid, make_axes_locatable
 from torchdiffeq import odeint
 
 
@@ -189,7 +189,7 @@ def process_config(
         dataset_ts_params["n_seq"] = len(dataset_ts)
         dataset_tr_eval_params = dataset_tr_params
     elif "splash" in input_dataset:
-        state_dim = 3
+        state_dim = 1
         coord_dim = 2
         # code_dim = 100
         # hidden_c = 2**8
@@ -198,19 +198,18 @@ def process_config(
         code_dim = 200
         hidden_c = 800
         hidden_c_enc = 256
-        n_layers = 6
+        n_layers = 4
         minibatch_size = 4
         size = (11768, 2)
-        n_seq = 64
-        n_frames_train = 10
+        n_seq = 2
         dataset_tr_params = {
             "dataset_name": "splash",
             "root": "results/splash/",  # Path to your generated data.
             "device": "cuda",
             "buffer_shelve": None,
             "n_seq": n_seq,
-            "n_seq_per_traj": 8,
-            "t_horizon": 20,
+            "n_seq_per_traj": 2,
+            "t_horizon": 60,
             "dt": 1,
             "group": "train",
             "n_frames_train": n_frames_train,
@@ -333,12 +332,17 @@ def eval_dino(
     gts, mos = [], []
     set_requires_grad(net_dec, False)
     set_requires_grad(net_dyn, False)
+
+    # Iterate over batches
     for j, batch in enumerate(dataloader):
+        # Get data
         ground_truth = batch["data"].to(device)
         t = batch["t"][0].to(device)
         index = batch["index"].to(device)
         model_input = batch["coords"].to(device)
         b_size, t_size, xy_size, _ = ground_truth.shape
+
+        # Adaptive learning rate?
         if lr_adapt != 0.0:
             loss_min_test = 1e30
             states_params_out = nn.ParameterList(
@@ -348,6 +352,8 @@ def eval_dino(
                 ]
             )
             optim_states_out = torch.optim.Adam(states_params_out, lr=lr_adapt)
+
+            # Encoding?
             for i in range(n_steps):
                 states_params_index = [states_params_out[d] for d in index]
                 states_params_index = torch.stack(states_params_index, dim=1)
@@ -358,44 +364,61 @@ def eval_dino(
                 model_input_exp = model_input_exp.expand(
                     b_size, 1, xy_size, state_dim, coord_dim
                 )
+
+                # Decode latent dynamic states
                 model_output, _ = net_dec(model_input_exp, states)
+
+                # Compute loss for initial condition?
                 loss_l2 = criterion(
                     # model_output[:, :, mask, :], ground_truth[:, 0:1, mask, :]
                     model_output,
                     ground_truth[:, 0:1, :, :],
                 )
+
                 if loss_l2 < loss_min_test and save_best:
                     loss_min_test = loss_l2
                     best_states_params_index = states_params_index
+                
                 loss_opt_new = loss_l2
 
+                # Update parameters for initial condition
                 loss_opt = loss_opt_new
                 optim_states_out.zero_grad(True)
                 loss_opt.backward()
                 optim_states_out.step()
+
             if save_best:
                 states_params_index = best_states_params_index
+
         with torch.no_grad():
             if lr_adapt == 0.0:
                 states_params_index = [states_params[d] for d in index]
                 states_params_index = torch.stack(states_params_index, dim=1)
-            model_input_exp = model_input.view(b_size, 1, xy_size, 1, coord_dim)
-            model_input_exp = model_input_exp.expand(
-                b_size, t_size, xy_size, state_dim, coord_dim
-            )
+
+            # Integrate latent dynamics
             codes = odeint(
                 net_dyn, states_params_index[0], t, method=method
             )  # t x batch x dim
             codes = codes.permute(1, 0, 2).view(
                 b_size, t_size, state_dim, code_dim
             )  # batch x t x dim
+
+            # Decode latent dynamic states after time-integration
+            model_input_exp = model_input.view(b_size, 1, xy_size, 1, coord_dim)
+            model_input_exp = model_input_exp.expand(
+                b_size, t_size, xy_size, state_dim, coord_dim
+            )
             model_output, _ = net_dec(model_input_exp, codes)
+
+            # Compute loss within training horizon
             if n_frames_train != 0:
                 loss_in_t += criterion(
                     model_output[:, :n_frames_train, :, :],
                     ground_truth[:, :n_frames_train, :, :],
                 )
                 loss += criterion(model_output, ground_truth)
+
+            # Compute loss outside training horizon
             loss_out_t += criterion(
                 model_output[:, n_frames_train:, :, :],
                 ground_truth[:, n_frames_train:, :, :],
@@ -419,6 +442,8 @@ def eval_dino(
             #     )
             gts.append(ground_truth.cpu())
             mos.append(model_output.cpu())
+
+    # Average losses
     loss /= len(dataloader)
     loss_in_t /= len(dataloader)
     loss_out_t /= len(dataloader)
@@ -428,6 +453,7 @@ def eval_dino(
     loss_in_t_out_s /= len(dataloader)
     set_requires_grad(net_dec, True)
     set_requires_grad(net_dyn, True)
+
     return (
         loss,
         loss_in_t,
@@ -439,153 +465,6 @@ def eval_dino(
         gts,
         mos,
     )
-
-
-def eval_dino_cond(
-    dataloader,
-    net_dyn,
-    net_dec,
-    net_cond,
-    device,
-    method,
-    criterion,
-    # mask_data,
-    # mask,
-    state_dim,
-    code_dim,
-    coord_dim,
-    n_frames_train=0,
-    states_params=None,
-    lr_adapt=0.0,
-    input_dataset=None,
-    n_steps=300,
-    n_cond=4,
-    is_test=True,
-):
-    loss, loss_out_t, loss_in_t = 0.0, 0.0, 0.0
-    gts, mos, times, ss, pss, cs = [], [], [], [], [], []
-    set_requires_grad(net_dec, False)
-    set_requires_grad(net_dyn, False)
-    set_requires_grad(net_cond, False)
-    for j, batch in enumerate(dataloader):
-        ground_truth = batch["data"].to(device)
-        t = batch["t"][0][n_cond:].to(device)
-        b_size, t_size, xy_size, _ = ground_truth.shape
-        index = batch["index"].to(device)
-        model_input = batch["coords"].to(device)
-        if lr_adapt != 0.0:
-            states_params_out = nn.ParameterList(
-                [
-                    nn.Parameter(
-                        torch.zeros(n_cond + 1, code_dim * state_dim).to(device)
-                    )
-                    for _ in range(b_size)
-                ]
-            )
-            optim_states_out = torch.optim.Adam(states_params_out, lr=lr_adapt)
-            for i in range(n_steps):
-                states_params_index = torch.stack(list(states_params_out), dim=1)
-                states = states_params_index.permute(1, 0, 2).view(
-                    b_size, n_cond + 1, state_dim, code_dim
-                )
-                model_input_exp = model_input.view(b_size, 1, xy_size, 1, coord_dim)
-                model_input_exp = model_input_exp.expand(
-                    b_size, n_cond + 1, xy_size, state_dim, coord_dim
-                )
-                model_output, _ = net_dec(model_input_exp, states)
-                loss_l2 = criterion(
-                    # model_output[:, :, mask, :], ground_truth[:, : n_cond + 1, mask, :]
-                    model_output,
-                    ground_truth[:, : n_cond + 1, :, :],
-                )
-                loss_opt_new = loss_l2
-                loss_opt = loss_opt_new
-                optim_states_out.zero_grad(True)
-                loss_opt.backward()
-                optim_states_out.step()
-        with torch.no_grad():
-            if lr_adapt == 0.0:
-                states_params_index = [states_params[d] for d in index]
-                states_params_index = torch.stack(states_params_index, dim=1)
-                states = states_params_index.permute(1, 0, 2).view(
-                    b_size, n_frames_train, state_dim, code_dim
-                )
-            model_input_exp = model_input.view(b_size, 1, xy_size, 1, coord_dim)
-            model_input_exp = model_input_exp.expand(
-                b_size, t_size - n_cond, xy_size, state_dim, coord_dim
-            )
-            extra_state = net_cond(
-                states_params_index[:n_cond].permute(1, 0, 2).detach().clone()
-            )
-            augmented_state = torch.cat(
-                [extra_state, states_params_index[n_cond].detach().clone()], dim=-1
-            )
-
-            codes = odeint(
-                net_dyn, augmented_state, t, method=method
-            )  # t x batch x dim
-            codes = (
-                codes[:, :, code_dim * state_dim :]
-                .permute(1, 0, 2)
-                .view(b_size, t.numel(), state_dim, code_dim)
-            )  # batch x t x dim
-
-            model_output, _ = net_dec(model_input_exp, codes)
-
-            ground_truth_ = ground_truth[:, n_cond:n_frames_train, :, :]
-            model_output_ = model_output
-
-            if input_dataset == "sst":
-                mu_norm, std_norm = (
-                    batch["mu_norm"].to(device).unsqueeze(-1),
-                    batch["std_norm"].to(device).unsqueeze(-1),
-                )
-
-                model_output_ = (model_output_ * std_norm) + mu_norm
-                ground_truth_ = (ground_truth_ * std_norm) + mu_norm
-
-                # Original space for MSE
-                mu_clim, std_clim = (
-                    batch["mu_clim"].to(device).unsqueeze(-1),
-                    batch["std_clim"].to(device).unsqueeze(-1),
-                )
-                model_output_ = (model_output_ * std_clim) + mu_clim
-                ground_truth_ = (ground_truth_ * std_clim) + mu_clim
-
-            if n_frames_train != 0:
-                loss_in_t += criterion(
-                    model_output_[:, : n_frames_train - n_cond, :, :, :], ground_truth_
-                )
-                loss += criterion(
-                    model_output_[:, : n_frames_train - n_cond, :, :, :], ground_truth_
-                )
-            # if mask_data != 0.0:
-            #     loss_in_t_in_s += criterion(
-            #         model_output_[:, :n_frames_train, mask, :],
-            #         ground_truth[:, :n_frames_train, mask, :],
-            #     )
-            #     loss_in_t_out_s += criterion(
-            #         model_output_[:, :n_frames_train, ~mask, :],
-            #         ground_truth[:, :n_frames_train, ~mask, :],
-            #     )
-            gts.append(ground_truth.cpu())
-            mos.append(model_output.cpu())
-            pss.append(torch.zeros(1))
-            times.append(t.cpu())
-            ss.append(states.cpu())
-            cs.append(codes.cpu())
-        print(j)
-        if not is_test:
-            break
-    loss /= j + 1
-    loss_in_t /= j + 1
-
-    set_requires_grad(net_dec, True)
-    set_requires_grad(net_dyn, True)
-    set_requires_grad(net_cond, True)
-
-    return loss, loss_in_t, gts, mos, times, ss, pss, cs
-
 
 def scheduling(_int, _f, true_codes, t, epsilon, method="rk4"):
     if epsilon < 1e-3:
@@ -693,18 +572,20 @@ def write_image(
     Print reference trajectory (1st line) and predicted trajectory (2nd line).
     Skip every N frames (N=divider)
     """
-    # batch_gt = torch.permute(batch_gt, (1, 0, 2, 3))
-    # batch_pred = torch.permute(batch_pred, (1, 0, 2, 3))
-    seq_len, batch_size, xy_size, state_c = batch_gt.shape  # [n_b, n_t, n_xyz, n_s]
+    batch_size, seq_len, xy_size, state_c = batch_gt.shape  # [n_b, n_t, n_xyz, n_s]
     t_horizon = math.ceil(seq_len / divider)
     for batch in range(batch_size):
         for t in range(t_horizon):
+            # Extrema for color map
             vmax = np.max(batch_gt[batch, t, :, :])
             vmin = np.min(batch_gt[batch, t, :, :])
-            fig, ax = plt.subplots(1, 2, figsize=(17, 8))
-            # Iterating over the grid returns the Axes.
+
+            # Figure
+            fig, ax = plt.subplots(1, 3, figsize=(25, 8))
             fig.suptitle(f"State = {state_idx}, Trajectory = {batch}, t = {t}")
-            # ax[batch, t].set_title(f"t={t}")
+
+            # Ground truth
+            ax[0].set_title("Ground Truth")
             ax[0].scatter(
                 coords[:, 0],
                 coords[:, 1],
@@ -715,20 +596,37 @@ def write_image(
                 cmap=cmap,
             )
             ax[0].set_axis_off()
-            # ax[batch, t].colorbar(sc)
-            # if t - 4 >= 0:
+
+            # Prediction
+            ax[1].set_title("Prediction")
             ax[1].scatter(
                 coords[:, 0],
                 coords[:, 1],
-                c=batch_pred[batch, t, :, state_idx].clone().detach().cpu().numpy(),
+                c=batch_pred[batch, t, :, state_idx],
                 s=2,
                 vmax=vmax,
                 vmin=vmin,
                 cmap=cmap,
             )
             ax[1].set_axis_off()
-            # grid[(2 * batch + 1) * t_horizon + t].set_axis_off()
 
+            # Error
+            ax[2].set_title("Absolute Error")
+            err = ax[2].scatter(
+                coords[:, 0],
+                coords[:, 1],
+                c=np.abs(batch_pred[batch, t, :, state_idx] - batch_gt[batch, t, :, state_idx]),
+                s=2,
+                # vmax=vmax,
+                # vmin=vmin,
+                cmap=cmap,
+            )
+            divider = make_axes_locatable(ax[2])
+            cax = divider.append_axes('right', size='5%', pad=0.05)
+            fig.colorbar(err, cax=cax, orientation='vertical')
+            ax[2].set_axis_off()
+
+            # Save
             fig.savefig(
                 os.path.join(path, f"s{state_idx:04d}_b{batch:04d}_t{t:04d}.png"),
                 dpi=150,
@@ -752,3 +650,150 @@ def set_rdm_seed(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+# # Non-Markovian variant
+# def eval_dino_cond(
+#     dataloader,
+#     net_dyn,
+#     net_dec,
+#     net_cond,
+#     device,
+#     method,
+#     criterion,
+#     # mask_data,
+#     # mask,
+#     state_dim,
+#     code_dim,
+#     coord_dim,
+#     n_frames_train=0,
+#     states_params=None,
+#     lr_adapt=0.0,
+#     input_dataset=None,
+#     n_steps=300,
+#     n_cond=4,
+#     is_test=True,
+# ):
+#     loss, loss_out_t, loss_in_t = 0.0, 0.0, 0.0
+#     gts, mos, times, ss, pss, cs = [], [], [], [], [], []
+#     set_requires_grad(net_dec, False)
+#     set_requires_grad(net_dyn, False)
+#     set_requires_grad(net_cond, False)
+#     for j, batch in enumerate(dataloader):
+#         ground_truth = batch["data"].to(device)
+#         t = batch["t"][0][n_cond:].to(device)
+#         b_size, t_size, xy_size, _ = ground_truth.shape
+#         index = batch["index"].to(device)
+#         model_input = batch["coords"].to(device)
+#         if lr_adapt != 0.0:
+#             states_params_out = nn.ParameterList(
+#                 [
+#                     nn.Parameter(
+#                         torch.zeros(n_cond + 1, code_dim * state_dim).to(device)
+#                     )
+#                     for _ in range(b_size)
+#                 ]
+#             )
+#             optim_states_out = torch.optim.Adam(states_params_out, lr=lr_adapt)
+#             for i in range(n_steps):
+#                 states_params_index = torch.stack(list(states_params_out), dim=1)
+#                 states = states_params_index.permute(1, 0, 2).view(
+#                     b_size, n_cond + 1, state_dim, code_dim
+#                 )
+#                 model_input_exp = model_input.view(b_size, 1, xy_size, 1, coord_dim)
+#                 model_input_exp = model_input_exp.expand(
+#                     b_size, n_cond + 1, xy_size, state_dim, coord_dim
+#                 )
+#                 model_output, _ = net_dec(model_input_exp, states)
+#                 loss_l2 = criterion(
+#                     # model_output[:, :, mask, :], ground_truth[:, : n_cond + 1, mask, :]
+#                     model_output,
+#                     ground_truth[:, : n_cond + 1, :, :],
+#                 )
+#                 loss_opt_new = loss_l2
+#                 loss_opt = loss_opt_new
+#                 optim_states_out.zero_grad(True)
+#                 loss_opt.backward()
+#                 optim_states_out.step()
+#         with torch.no_grad():
+#             if lr_adapt == 0.0:
+#                 states_params_index = [states_params[d] for d in index]
+#                 states_params_index = torch.stack(states_params_index, dim=1)
+#                 states = states_params_index.permute(1, 0, 2).view(
+#                     b_size, n_frames_train, state_dim, code_dim
+#                 )
+#             model_input_exp = model_input.view(b_size, 1, xy_size, 1, coord_dim)
+#             model_input_exp = model_input_exp.expand(
+#                 b_size, t_size - n_cond, xy_size, state_dim, coord_dim
+#             )
+#             extra_state = net_cond(
+#                 states_params_index[:n_cond].permute(1, 0, 2).detach().clone()
+#             )
+#             augmented_state = torch.cat(
+#                 [extra_state, states_params_index[n_cond].detach().clone()], dim=-1
+#             )
+
+#             codes = odeint(
+#                 net_dyn, augmented_state, t, method=method
+#             )  # t x batch x dim
+#             codes = (
+#                 codes[:, :, code_dim * state_dim :]
+#                 .permute(1, 0, 2)
+#                 .view(b_size, t.numel(), state_dim, code_dim)
+#             )  # batch x t x dim
+
+#             model_output, _ = net_dec(model_input_exp, codes)
+
+#             ground_truth_ = ground_truth[:, n_cond:n_frames_train, :, :]
+#             model_output_ = model_output
+
+#             if input_dataset == "sst":
+#                 mu_norm, std_norm = (
+#                     batch["mu_norm"].to(device).unsqueeze(-1),
+#                     batch["std_norm"].to(device).unsqueeze(-1),
+#                 )
+
+#                 model_output_ = (model_output_ * std_norm) + mu_norm
+#                 ground_truth_ = (ground_truth_ * std_norm) + mu_norm
+
+#                 # Original space for MSE
+#                 mu_clim, std_clim = (
+#                     batch["mu_clim"].to(device).unsqueeze(-1),
+#                     batch["std_clim"].to(device).unsqueeze(-1),
+#                 )
+#                 model_output_ = (model_output_ * std_clim) + mu_clim
+#                 ground_truth_ = (ground_truth_ * std_clim) + mu_clim
+
+#             if n_frames_train != 0:
+#                 loss_in_t += criterion(
+#                     model_output_[:, : n_frames_train - n_cond, :, :, :], ground_truth_
+#                 )
+#                 loss += criterion(
+#                     model_output_[:, : n_frames_train - n_cond, :, :, :], ground_truth_
+#                 )
+#             # if mask_data != 0.0:
+#             #     loss_in_t_in_s += criterion(
+#             #         model_output_[:, :n_frames_train, mask, :],
+#             #         ground_truth[:, :n_frames_train, mask, :],
+#             #     )
+#             #     loss_in_t_out_s += criterion(
+#             #         model_output_[:, :n_frames_train, ~mask, :],
+#             #         ground_truth[:, :n_frames_train, ~mask, :],
+#             #     )
+#             gts.append(ground_truth.cpu())
+#             mos.append(model_output.cpu())
+#             pss.append(torch.zeros(1))
+#             times.append(t.cpu())
+#             ss.append(states.cpu())
+#             cs.append(codes.cpu())
+#         print(j)
+#         if not is_test:
+#             break
+#     loss /= j + 1
+#     loss_in_t /= j + 1
+
+#     set_requires_grad(net_dec, True)
+#     set_requires_grad(net_dyn, True)
+#     set_requires_grad(net_cond, True)
+
+#     return loss, loss_in_t, gts, mos, times, ss, pss, cs

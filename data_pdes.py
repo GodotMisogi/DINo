@@ -100,6 +100,7 @@ class AbstractDataset(Dataset):
         t = torch.arange(0, self.t_horizon, self.dt_eval).float()
         traj_id = index // self.n_seq_per_traj
         seq_id = index % self.n_seq_per_traj
+
         if self.buffer.get(f"{traj_id}") is None:
             if self.buffer_shelve is not None:
                 if self.buffer_shelve.get(f"{traj_id}") is None:
@@ -107,10 +108,13 @@ class AbstractDataset(Dataset):
                 self.buffer[f"{traj_id}"] = self.buffer_shelve[f"{traj_id}"]
             else:
                 self.buffer[f"{traj_id}"] = self._load_trajectory(traj_id)
+        
         data = self.buffer[f"{traj_id}"]["data"][
             :, seq_id * self.n : (seq_id + 1) * self.n
         ]  # (n_ch, T, nodes)
-        data = torch.tensor(data).clone().detach().permute(1, 2, 0)  # (T, nodes, n_ch)
+        data = data.clone().detach().permute(1, 2, 0)  # (T, nodes, n_ch)
+
+        
         if self.group == "train":
             data = data[: self.n_frames_train] / self.scale
             t = t[: self.n_frames_train]

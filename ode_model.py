@@ -15,16 +15,18 @@
 
 from network import MLP, FourierNet
 from torch import nn
-
+from revin import RevIN
 
 class Derivative(nn.Module):
     def __init__(self, state_c, code_c, hidden_c, **kwargs):
         super().__init__()
         input_dim = code_c * state_c
+        self.revin = RevIN(input_dim)
         self.net = MLP(input_dim, hidden_c, nl='swish')
 
     def forward(self, t, u):
         return self.net(u)
+        # return self.revin(self.net(self.revin(u, 'norm')), 'denorm')
 
 
 class Decoder(nn.Module):
