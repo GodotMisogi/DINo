@@ -28,14 +28,14 @@ class Derivative(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, state_c, hidden_c, code_c, coord_dim, n_layers, **kwargs):
+    def __init__(self, state_c, hidden_c, code_c, coord_dim, n_layers, input_scale, **kwargs):
         super().__init__()
         self.state_c = state_c
         self.hidden_c = hidden_c
         self.coord_dim = coord_dim
         self.out_dim = 1
         self.code_dim = code_c
-        self.net = FourierNet(self.coord_dim, self.hidden_c, self.code_dim, self.out_dim, n_layers, input_scale=64)
+        self.net = FourierNet(self.coord_dim, self.hidden_c, self.code_dim, self.out_dim, n_layers, input_scale=input_scale)
 
     def forward(self, x, codes=None):
         if codes is None:

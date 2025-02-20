@@ -194,26 +194,26 @@ def process_config(
         dataset_ts_params["n_seq"] = len(dataset_ts)
         dataset_tr_eval_params = dataset_tr_params
     elif "shallow" in input_dataset:
-        state_dim = 3
+        state_dim = 1
         coord_dim = 2
         # code_dim = 100
         # hidden_c = 2**8
         # hidden_c_enc = 2**8
         # n_layers = 3
-        code_dim = 600
-        hidden_c = 1200
+        code_dim = 400
+        hidden_c = 800
         hidden_c_enc = 256
         n_layers = 6
-        minibatch_size = 4
-        size = (48, 48)
-        n_seq = 8
+        minibatch_size = 32
+        size = (98, 98)
+        n_seq = 4
         dataset_tr_params = {
             "dataset_name": "shallow",
             "root": "results/shallow/",  # Path to your generated data.
             "device": "cuda",
             "buffer_shelve": None,
             "n_seq": n_seq,
-            "n_seq_per_traj": 8,
+            "n_seq_per_traj": 4,
             "t_horizon": 40,
             "dt": 1,
             "group": "train",
@@ -227,7 +227,7 @@ def process_config(
         dataset_ts_params = dict()
         dataset_ts_params.update(dataset_tr_params)
         dataset_ts_params["group"] = "test"
-        dataset_ts_params["n_seq"] = 8
+        dataset_ts_params["n_seq"] = 4
 
         dataset_tr = ShallowDataset(**dataset_tr_params)
         dataset_tr_eval = ShallowDataset(**dataset_tr_eval_params)
@@ -276,8 +276,9 @@ def process_config(
     if isinstance(size, int):
         size = (size, size)
     n_mask = 1
-    mask = generate_mask(size[0], size[1], device, mask_data=mask_data, n_mask=n_mask, seed=1)
-    mask_ts = generate_mask(size[0], size[1], device, mask_data=mask_data, n_mask=n_mask, seed=42)
+    mask = generate_mask(size[0], size[1], device, mask_data=mask_data, n_mask=n_mask)
+    # mask_ts = generate_mask(size[0], size[1], device, mask_data=mask_data, n_mask=n_mask, seed=42)
+    mask_ts = mask
 
     if input_dataset == "shallow_water_hs":
         mask = generate_skipped_lat_lon_mask(dataset_tr.coords_ang, device).bool()
@@ -328,9 +329,9 @@ def generate_skipped_lat_lon_mask(coords, device, base_jump=0):
     return mask.to(device)
 
 
-def generate_mask(h_size, w_size, device, seed, mask_data=0, n_mask=1):
+def generate_mask(h_size, w_size, device, mask_data=0, n_mask=1):
     mask_list = []
-    set_rdm_seed(seed)
+    # set_rdm_seed(seed)
     for _ in range(n_mask):
         mask_list.append((torch.rand(h_size, w_size) >= mask_data)[None, :])
     mask = torch.cat(mask_list, dim=0).squeeze()
@@ -410,7 +411,7 @@ def eval_dino(
                 model_output, _ = net_dec(model_input_exp, states)
                 model_output = revin(model_output, mode="denorm")
                 loss_l2 = criterion(
-                    model_output[:, :, mask, :], ground_truth[:, 0:1, mask, :]
+                    model_output[:, :, mask, :], ground_truth[:, 0:1, mask, :] # Loss on initial condition
                 )
                 if loss_l2 < loss_min_test and save_best:
                     loss_min_test = loss_l2
@@ -742,11 +743,11 @@ def write_image(batch_gt, batch_pred, state_idx, path, cmap="RdBu_r", divider=1)
     batch_pred = torch.permute(batch_pred, (1, 0, 2, 3, 4))
     seq_len, batch_size, height, width, state_c = batch_gt.shape  # [8, 20, 64, 64, 2]
     t_horizon = math.ceil(seq_len / divider)
-    fig = plt.figure(figsize=(t_horizon, batch_size * 2.0))
+    fig = plt.figure(figsize=(t_horizon * 2, batch_size * 3 * 2))
     grid = ImageGrid(
         fig,
         111,  # similar to subplot(111)
-        nrows_ncols=(batch_size * 2, t_horizon),  # creates 2x2 grid of axes
+        nrows_ncols=(batch_size * 3, t_horizon),  # creates 2x2 grid of axes
         axes_pad=0.05,
     )  # pad between axes in inch.
     for traj in range(batch_size):
@@ -756,22 +757,28 @@ def write_image(batch_gt, batch_pred, state_idx, path, cmap="RdBu_r", divider=1)
         vmin = np.min(gt)
         for t in range(t_horizon):
             # Iterating over the grid returns the Axes.
-            grid[2 * traj * t_horizon + t].imshow(
+            grid[3 * traj * t_horizon + t].imshow(
                 gt[divider * t],
                 vmax=vmax,
                 vmin=vmin,
                 cmap=cmap,
                 interpolation="none",
             )
-            grid[(2 * traj + 1) * t_horizon + t].imshow(
+            grid[(3 * traj + 1) * t_horizon + t].imshow(
                 pr[divider * t],
                 vmax=vmax,
                 vmin=vmin,
                 cmap=cmap,
                 interpolation="none",
             )
-            grid[2 * traj * t_horizon + t].set_axis_off()
-            grid[(2 * traj + 1) * t_horizon + t].set_axis_off()
+            grid[(3 * traj + 2) * t_horizon + t].imshow(
+                np.abs(gt[divider * t] - pr[divider * t]),
+                cmap=cmap,
+                interpolation="none",
+            )
+            grid[3 * traj * t_horizon + t].set_axis_off()
+            grid[(3 * traj + 1) * t_horizon + t].set_axis_off()
+            grid[(3 * traj + 2) * t_horizon + t].set_axis_off()
 
     plt.savefig(os.path.join(path), dpi=72, bbox_inches="tight", pad_inches=0)
     plt.close(fig)

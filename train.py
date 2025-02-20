@@ -44,8 +44,8 @@ matplotlib.pyplot.set_loglevel("critical")
 
 log_every = 8
 input_dataset = "shallow"
-gpu = [0, 1]
-gpu_id = [0, 1]
+gpu = 1
+gpu_id = 1
 home_folder = "./results"
 lr = 1e-2
 lr_adapt = 1e-2
@@ -75,7 +75,7 @@ ts = now.strftime("%Y%m%d_%H%M%S")
 cuda = torch.cuda.is_available()
 if cuda:
     gpu_id = gpu
-    device = torch.device(f"cuda")
+    device = torch.device(f"cuda:{gpu_id}")
 else:
     device = torch.device("cpu")
 
@@ -130,6 +130,7 @@ if checkpoint_path is None:  # Start from scratch
         "hidden_c": hidden_c_enc,
         "n_layers": n_layers,
         "coord_dim": coord_dim,
+        "input_scale": 256.0, # SIREN frequency
     }
     # Forecaster
     net_dyn_params = {
