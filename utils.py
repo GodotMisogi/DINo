@@ -51,7 +51,7 @@ def process_config(
         n_layers = 3
         minibatch_size = 32
         dataset_tr_params = {
-            "n_seq": 512,
+            "n_traj": 512,
             "n_seq_per_traj": 8,
             "t_horizon": 5,
             "dt": 0.25,
@@ -70,7 +70,7 @@ def process_config(
         buffer_shelve_tr = buffer_shelve_tr_eval = shelve.open(buffer_file_tr)
         buffer_file_ts = f"{path_results}/wave_test.shelve"
         buffer_shelve_ts = shelve.open(buffer_file_ts)
-        dataset_ts_params["n_seq"] = 32
+        dataset_ts_params["n_traj"] = 32
         dataset_tr = WaveDataset(buffer_shelve=buffer_shelve_tr, **dataset_tr_params)
         dataset_tr_eval = WaveDataset(
             buffer_shelve=buffer_shelve_tr_eval, **dataset_tr_eval_params
@@ -93,7 +93,7 @@ def process_config(
         visc = 1e-3
         dataset_tr_params = {
             "device": "cuda:0",
-            "n_seq": n_seq,
+            "n_traj": n_seq,
             "n_seq_per_traj": 2,
             "t_horizon": t_horizon,
             "dt": 1,
@@ -113,7 +113,7 @@ def process_config(
         dataset_ts_params = dict()
         dataset_ts_params.update(dataset_tr_params)
         dataset_ts_params["group"] = "test"
-        dataset_ts_params["n_seq"] = 32
+        dataset_ts_params["n_traj"] = 32
 
         buffer_file_tr = f"{path_results}/navier_1e-3_train.shelve"
         buffer_file_ts = f"{path_results}/navier_1e-3_test.shelve"
@@ -144,7 +144,7 @@ def process_config(
             "root": f"{path_results}",  # Path to your generated data.
             "device": "cuda:0",
             "buffer_shelve": None,
-            "n_seq": n_seq,
+            "n_traj": n_seq,
             "n_seq_per_traj": 8,
             "t_horizon": 20,
             "dt": 1,
@@ -159,7 +159,7 @@ def process_config(
         dataset_ts_params = dict()
         dataset_ts_params.update(dataset_tr_params)
         dataset_ts_params["group"] = "test" if "hr" not in input_dataset else "test_hr"
-        dataset_ts_params["n_seq"] = 16
+        dataset_ts_params["n_traj"] = 16
 
         dataset_tr = ShallowWaterDataset(**dataset_tr_params)
         dataset_tr_eval = ShallowWaterDataset(**dataset_tr_eval_params)
@@ -190,31 +190,28 @@ def process_config(
         dataset_ts = SST(**dataset_ts_params)
         dataset_tr_eval = dataset_ts
 
-        dataset_tr_params["n_seq"] = len(dataset_tr)
-        dataset_ts_params["n_seq"] = len(dataset_ts)
+        dataset_tr_params["n_traj"] = len(dataset_tr)
+        dataset_ts_params["n_traj"] = len(dataset_ts)
         dataset_tr_eval_params = dataset_tr_params
     elif "shallow" in input_dataset:
-        state_dim = 1
+        state_dim = 3
         coord_dim = 2
-        # code_dim = 100
-        # hidden_c = 2**8
-        # hidden_c_enc = 2**8
-        # n_layers = 3
-        code_dim = 400
-        hidden_c = 800
+        code_dim = 6000
+        hidden_c = 100
         hidden_c_enc = 256
-        n_layers = 6
-        minibatch_size = 32
-        size = (98, 98)
-        n_seq = 4
+        n_layers = 2
+        minibatch_size = 4
+        # size = (128 * 64, 1)
+        size = (98**2, 1)
+        n_traj = 8
         dataset_tr_params = {
             "dataset_name": "shallow",
-            "root": "results/shallow/",  # Path to your generated data.
+            "root": "results/shallow/101_101",  # Path to your generated data.
             "device": "cuda",
             "buffer_shelve": None,
-            "n_seq": n_seq,
+            "n_traj": n_traj,
             "n_seq_per_traj": 4,
-            "t_horizon": 40,
+            "t_horizon": 60,
             "dt": 1,
             "group": "train",
             "n_frames_train": n_frames_train,
@@ -227,7 +224,7 @@ def process_config(
         dataset_ts_params = dict()
         dataset_ts_params.update(dataset_tr_params)
         dataset_ts_params["group"] = "test"
-        dataset_ts_params["n_seq"] = 4
+        dataset_ts_params["n_traj"] = 4
 
         dataset_tr = ShallowDataset(**dataset_tr_params)
         dataset_tr_eval = ShallowDataset(**dataset_tr_eval_params)
@@ -245,13 +242,13 @@ def process_config(
         n_layers = 6
         minibatch_size = 4
         size = (11768, 1)
-        n_seq = 4
+        n_traj = 4
         dataset_tr_params = {
             "dataset_name": "splash",
             "root": "results/splash/",  # Path to your generated data.
             "device": "cuda",
             "buffer_shelve": None,
-            "n_seq": n_seq,
+            "n_traj": n_traj,
             "n_seq_per_traj": 4,
             "t_horizon": 40,
             "dt": 1,
@@ -266,7 +263,7 @@ def process_config(
         dataset_ts_params = dict()
         dataset_ts_params.update(dataset_tr_params)
         dataset_ts_params["group"] = "test"
-        dataset_ts_params["n_seq"] = 4
+        dataset_ts_params["n_traj"] = 2
 
         dataset_tr = SplashDataset(**dataset_tr_params)
         dataset_tr_eval = SplashDataset(**dataset_tr_eval_params)
@@ -390,9 +387,9 @@ def eval_dino(
         if lr_adapt != 0.0:
             loss_min_test = 1e30
             states_params_out = nn.ParameterList(
-                [
+                [ # Create a list of parameters for each sequence
                     nn.Parameter(torch.zeros(1, code_dim * state_dim).to(device))
-                    for _ in range(dataset_params["n_seq"])
+                    for _ in range(dataset_params["n_traj"] * dataset_params["n_seq_per_traj"])
                 ]
             )
             optim_states_out = torch.optim.Adam(states_params_out, lr=lr_adapt)

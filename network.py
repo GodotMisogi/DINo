@@ -102,9 +102,9 @@ class MLP(nn.Module):
             nls[nl](), 
             nn.Linear(hidden_size, hidden_size),
             nls[nl](), 
-            nn.Linear(hidden_size, hidden_size), 
-            nls[nl](), 
-            nn.Linear(hidden_size, code_size if out_size == None else out_size),
+            # nn.Linear(hidden_size, hidden_size), 
+            # nls[nl](), 
+            nn.Linear(hidden_size, code_size if out_size is None else out_size),
         )
 
     def forward(self, x):

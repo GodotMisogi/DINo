@@ -52,10 +52,10 @@ def get_mgrid_from_tensors(tensors):
 ##############
 
 class AbstractDataset(Dataset):
-    def __init__(self, n_seq, n_seq_per_traj, size, t_horizon, dt, n_frames_train, buffer_shelve, group, scale=1, *args, **kwargs):
+    def __init__(self, n_traj, n_seq_per_traj, size, t_horizon, dt, n_frames_train, buffer_shelve, group, scale=1, *args, **kwargs):
         super().__init__()
-        self.n_seq = n_seq
-        self.n_seq_per_traj = n_seq_per_traj
+        self.n_traj = n_traj # number of sequences
+        self.n_seq_per_traj = n_seq_per_traj # number of sequences per trajectory
         self.size = size  # size of the 2D grid
         self.t_horizon = float(t_horizon)  # total time
         self.n = int(t_horizon / dt)  # number of iterations
@@ -78,18 +78,18 @@ class AbstractDataset(Dataset):
         raise NotImplementedError
 
     def __getitem__(self, index):
-        t = torch.arange(0, self.t_horizon, self.dt_eval).float()
-        traj_id = index // self.n_seq_per_traj
-        seq_id = index % self.n_seq_per_traj
+        t = torch.arange(0, self.t_horizon, self.dt_eval).float() # Prepare times
+        traj_id = index // self.n_seq_per_traj # Get trajectory ID?
         if self.buffer.get(f'{traj_id}') is None:
-            if self.buffer_shelve is not None:
-                if self.buffer_shelve.get(f'{traj_id}') is None:
-                    self._generate_trajectory(traj_id)
-                self.buffer[f'{traj_id}'] = self.buffer_shelve[f'{traj_id}']
-            else:
-                self.buffer[f'{traj_id}'] = self._load_trajectory(traj_id)
-        data = self.buffer[f'{traj_id}']['data'][:, seq_id * self.n:(seq_id + 1) * self.n]  # (n_ch, T, H, W)
+            self.buffer[f'{traj_id}'] = self._load_trajectory(traj_id)
+
+        # Chop up the trajectory into sequences and permute
+        data = self.buffer[f'{traj_id}']['data']
+        seq_id = index % self.n_seq_per_traj
+        # seq_id = torch.randint(low=0, high=data.shape[1] // self.n, size=(1,)).item()
+        data = data[:, seq_id * self.n:(seq_id + 1) * self.n]  # (n_ch, T, H, W)
         data = data.clone().detach().float().permute(1, 2, 3, 0)  # (T, H, W, n_ch)
+
         if self.group == 'train':
             data = data[:self.n_frames_train] / self.scale 
             t = t[:self.n_frames_train]
@@ -103,7 +103,7 @@ class AbstractDataset(Dataset):
         }
 
     def __len__(self):
-        return self.n_seq
+        return self.n_traj * self.n_seq_per_traj
 
 ########
 # Wave #
@@ -480,8 +480,9 @@ class ShallowDataset(AbstractDataset):
         xs = self.files_obj_buf[0]['coords']['x'][2:-2].astype(np.float32)
         ys = self.files_obj_buf[0]['coords']['y'][2:-2].astype(np.float32)
         # if self.group == "test":
+        # Normalize coordinates to [0, 1]
         tensors = torch.tensor(xs / (np.max(xs) - np.min(xs))), torch.tensor(ys / (np.max(ys) - np.min(ys)))
-        self.coords = torch.stack(torch.meshgrid(*tensors, indexing='ij'), dim=-1)
+        self.coords = torch.stack(torch.meshgrid(*tensors, indexing='ij'), dim=-1).reshape(-1, 2)
         # else:
         #     tensors = torch.tensor(xs[::2] / (np.max(xs) - np.min(xs))), torch.tensor(ys[::2] / (np.max(ys) - np.min(ys)))
         #     self.coords = torch.stack(torch.meshgrid(*tensors, indexing='ij'), dim=-1)
@@ -499,9 +500,10 @@ class ShallowDataset(AbstractDataset):
 
         f = self.files_obj_buf[traj_id]
         data = torch.from_numpy(f["traj"]["huv"][:,:,2:-2,2:-2])
+        data = data.reshape(data.shape[0], -1, data.shape[-2] * data.shape[-1]).unsqueeze(-1)
 
         # if self.group == "test":
-        return {"data": data}
+        return {"data": data }
         # else:
             # return {"data": data[:, ::2, ::2]}
     

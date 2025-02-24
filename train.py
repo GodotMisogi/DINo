@@ -49,10 +49,10 @@ gpu_id = 1
 home_folder = "./results"
 lr = 1e-2
 lr_adapt = 1e-2
-seed = 1
+seed = 42  # TEST: New seed
 options = {}
 opts, args = getopt.getopt(sys.argv[1:], "c:d:f:g:r:w:")
-subsampling_rate = 0.5
+subsampling_rate = 0.75
 checkpoint_path = None  # warm start from a model in this path
 n_cond = 0
 # for opt, arg in opts:
@@ -88,6 +88,7 @@ set_rdm_seed(seed)
 
 # Config
 # first = 4
+divider = 2
 n_frames_train = 30
 (
     mask,
@@ -130,7 +131,7 @@ if checkpoint_path is None:  # Start from scratch
         "hidden_c": hidden_c_enc,
         "n_layers": n_layers,
         "coord_dim": coord_dim,
-        "input_scale": 256.0, # SIREN frequency
+        "input_scale": 64,  # SIREN frequency
     }
     # Forecaster
     net_dyn_params = {
@@ -150,7 +151,10 @@ if checkpoint_path is None:  # Start from scratch
     states_params = nn.ParameterList(
         [
             nn.Parameter(torch.zeros(n_frames_train, code_dim * state_dim).to(device))
-            for _ in range(dataset_tr_eval_params["n_seq"])
+            for _ in range(
+                dataset_tr_eval_params["n_traj"]
+                * dataset_tr_eval_params["n_seq_per_traj"]
+            )
         ]
     )
 
@@ -212,6 +216,7 @@ criterion = nn.MSELoss()
 optim_net_dec = torch.optim.Adam([{"params": net_dec.parameters(), "lr": lr}])
 optim_net_dyn = torch.optim.Adam([{"params": net_dyn.parameters(), "lr": lr / 10}])
 optim_states = torch.optim.Adam([{"params": states_params, "lr": lr / 10}])
+optim_revin = torch.optim.Adam([{"params": revin.parameters(), "lr": lr / 10}])
 if n_cond:
     optim_net_cond = torch.optim.Adam(
         [{"params": net_cond.parameters(), "lr": lr / 10}]
@@ -226,9 +231,9 @@ logger.info(f"dataset: {input_dataset}")
 logger.info(f"method: {method}")
 logger.info(f"code_c: {code_dim}")
 logger.info(f"lr: {lr}")
-logger.info(
-    f"n_params forecaster: {count_parameters(net_dec) + count_parameters(net_dyn)}"
-)
+logger.info(f"n_params revin: {count_parameters(revin)}")
+logger.info(f"n_params decoder: {count_parameters(net_dec)}")
+logger.info(f"n_params dynamics: {count_parameters(net_dyn)}")
 logger.info(f"coord_dim: {coord_dim}")
 logger.info(f"n_frames_train: {n_frames_train}")
 logger.info(f"subsampling_rate: {subsampling_rate * 100}%")
@@ -237,82 +242,145 @@ if n_cond > 0:
 
 # Train
 loss_tr_min, loss_ts_min, loss_relative_min = float("inf"), float("inf"), float("inf")
+
+
+def step(
+    device,
+    path_checkpoint,
+    logger,
+    mask,
+    mask_ts,
+    state_dim,
+    coord_dim,
+    code_dim,
+    epsilon_t,
+    method,
+    net_dec,
+    net_dyn,
+    states_params,
+    revin,
+    criterion,
+    optim_states,
+    epoch,
+    i,
+    batch,
+):
+    ground_truth = batch["data"].to(device)
+    norm_gt = revin(ground_truth, mode="norm")
+    model_input = batch["coords"].to(device)
+    t = batch["t"][0].to(device)
+    index = batch["index"].to(device)
+    b_size, t_size, h_size, w_size, _ = ground_truth.shape
+
+    # Initial printing
+    if epoch == 0 and i == 0:
+        # # Display info on grid subsampling
+        # logger.info(f"N_ones in mask: {torch.sum(mask)}")
+        # logger.info(
+        #             f"Missingness ratio: {100.0 * (1 - torch.sum(mask) / (w_size * h_size))}%"
+        #         )
+        # plt.imshow(
+        #             torch.reshape(mask, (98, 98)).cpu().numpy(),
+        #             interpolation="none",
+        #         )
+        # plt.savefig(
+        #             os.path.join(path_checkpoint, "mask.png"),
+        #             dpi=72,
+        #             bbox_inches="tight",
+        #             pad_inches=0,
+        #         )
+
+        # plt.imshow(
+        #             torch.reshape(mask_ts, (98, 98)).cpu().numpy(),
+        #             interpolation="none",
+        #         )
+        # plt.savefig(
+        #             os.path.join(path_checkpoint, "mask_ts.png"),
+        #             dpi=72,
+        #             bbox_inches="tight",
+        #             pad_inches=0,
+        #         )
+        logger.info(f"ground_truth: {list(ground_truth.size())}")
+        logger.info(f"t: {t[0]}")
+        logger.info(f"index: {index}")
+
+    # Hypernetwork training
+    states_params_index = torch.stack([states_params[d] for d in index], dim=1)
+    states = states_params_index.permute(1, 0, 2).view(
+        b_size, t_size, state_dim, code_dim
+    )
+    model_input_exp = model_input.view(b_size, 1, h_size, w_size, 1, coord_dim).expand(
+        b_size, t_size, h_size, w_size, state_dim, coord_dim
+    )
+    model_output, _ = net_dec(model_input_exp, states)
+    model_output = revin(model_output, mode="denorm")
+    loss_l2 = criterion(model_output[:, :, mask, :], ground_truth[:, :, mask, :])
+
+    # Dynamics training
+    codes = scheduling(
+        odeint,
+        net_dyn,
+        states_params_index.detach().clone(),
+        t,
+        epsilon_t,
+        method=method,
+    )
+    loss_l2_states = criterion(codes, states_params_index.detach().clone())
+
+    return loss_l2, loss_l2_states
+
+
 for epoch in range(n_epochs):
     # Update Decoder and Dynamics
     if n_cond == 0:
         if epoch != 0:
             optim_net_dec.step()
             optim_net_dec.zero_grad()
-
+            
             optim_net_dyn.step()
             optim_net_dyn.zero_grad()
-
-        for i, batch in enumerate(dataloader_tr):
-            ground_truth = batch["data"].to(device)
-            norm_gt = revin(ground_truth, mode="norm")
-            model_input = batch["coords"].to(device)
-            t = batch["t"][0].to(device)
-            index = batch["index"].to(device)
-            b_size, t_size, h_size, w_size, _ = ground_truth.shape
-            if epoch == 0 and i == 0:
-                # Display info on grid subsampling
-                logger.info(f"N_ones in mask: {torch.sum(mask)}")
-                logger.info(
-                    f"Missingness ratio: {100.0 * (1 - torch.sum(mask) / (w_size * h_size))}%"
-                )
-                plt.imshow(mask.cpu().numpy(), interpolation="none")
-                plt.savefig(
-                    os.path.join(path_checkpoint, "mask.png"),
-                    dpi=72,
-                    bbox_inches="tight",
-                    pad_inches=0,
-                )
-
-                plt.imshow(mask_ts.cpu().numpy(), interpolation="none")
-                plt.savefig(
-                    os.path.join(path_checkpoint, "mask_ts.png"),
-                    dpi=72,
-                    bbox_inches="tight",
-                    pad_inches=0,
-                )
-                logger.info(f"ground_truth: {list(ground_truth.size())}")
-                logger.info(f"t: {t[0]}")
-                logger.info(f"index: {index}")
-
-            # Update latent states
-            states_params_index = torch.stack([states_params[d] for d in index], dim=1)
-            states = states_params_index.permute(1, 0, 2).view(
-                b_size, t_size, state_dim, code_dim
-            )
-            model_input_exp = model_input.view(
-                b_size, 1, h_size, w_size, 1, coord_dim
-            ).expand(b_size, t_size, h_size, w_size, state_dim, coord_dim)
-            model_output, _ = net_dec(model_input_exp, states)
-            model_output = revin(model_output, mode="denorm")
-            loss_l2 = criterion(
-                model_output[:, :, mask, :], ground_truth[:, :, mask, :]
-            )
-            optim_states.zero_grad(True)
-            loss_l2.backward()
+            
             optim_states.step()
+            optim_states.zero_grad()
 
-            # Cumulate gradient of dynamics
-            codes = scheduling(
-                odeint,
-                net_dyn,
-                states_params_index.detach().clone(),
-                t,
+            optim_revin.step()
+            optim_revin.zero_grad()
+
+        # Training loop
+        for i, batch in enumerate(dataloader_tr):
+            loss_l2, loss_l2_states = step(
+                device,
+                path_checkpoint,
+                logger,
+                mask,
+                mask_ts,
+                state_dim,
+                coord_dim,
+                code_dim,
                 epsilon_t,
-                method=method,
+                method,
+                net_dec,
+                net_dyn,
+                states_params,
+                revin,
+                criterion,
+                optim_states,
+                epoch,
+                i,
+                batch,
             )
-            loss_l2_states = criterion(codes, states_params_index.detach().clone())
+
+            loss_l2.backward()
             loss_l2_states.backward()
+
+            # Print logs
             if (epoch * len(dataloader_tr) + i) % log_every == 0:
                 logger.info(
                     "Dataset %s, Runid %s, Epoch [%d/%d] MSE Auto-dec %0.3e, MSE Dyn %0.3e, epsilon %0.3e"
                     % (input_dataset, ts, epoch, i, loss_l2, loss_l2_states, epsilon_t)
                 )
 
+            # Evaluate on training data
             if (epoch * len(dataloader_tr) + i + 1) % eval_every == 0:
                 epsilon_t *= epsilon
                 print("Evaluating train...")
@@ -351,14 +419,20 @@ for epoch in range(n_epochs):
                     for j, (ground_truth, model_output) in enumerate(zip(gts, mos)):
                         if j in [0]:
                             for state_idx in range(state_dim):
+                                b_size, t_size, h_size, w_size, _ = ground_truth.shape
                                 write_image(
-                                    ground_truth,
-                                    model_output,
+                                    ground_truth.view(
+                                        b_size, t_size, 98, 98, state_dim
+                                    ),
+                                    model_output.view(
+                                        b_size, t_size, 98, 98, state_dim
+                                    ),
                                     state_idx,
                                     os.path.join(
-                                        path_checkpoint, f"img_tr_state{state_idx}.png"
+                                        path_checkpoint,
+                                        f"img_tr_batch_{j}_state{state_idx}.png",
                                     ),
-                                    divider=4,
+                                    divider=divider,
                                 )
                     loss_tr_min = optimize_tr
                     torch.save(
@@ -375,7 +449,7 @@ for epoch in range(n_epochs):
                         os.path.join(path_checkpoint, f"model_tr.pt"),
                     )
 
-                # Out-of-domain evaluation
+                # Evaluate on testing data
                 print("Evaluating test...")
                 (
                     loss_ts,
@@ -414,14 +488,20 @@ for epoch in range(n_epochs):
                     for j, (ground_truth, model_output) in enumerate(zip(gts, mos)):
                         if j in [0]:
                             for state_idx in range(state_dim):
+                                b_size, t_size, h_size, w_size, _ = ground_truth.shape
                                 write_image(
-                                    ground_truth,
-                                    model_output,
+                                    ground_truth.view(
+                                        b_size, t_size, 98, 98, state_dim
+                                    ),
+                                    model_output.view(
+                                        b_size, t_size, 98, 98, state_dim
+                                    ),
                                     state_idx,
                                     os.path.join(
-                                        path_checkpoint, f"img_ts_state{state_idx}.png"
+                                        path_checkpoint,
+                                        f"img_ts_batch_{j}_state{state_idx}.png",
                                     ),
-                                    divider=4,
+                                    divider=divider,
                                 )
                     loss_ts_min = optimize_ts
                     torch.save(
